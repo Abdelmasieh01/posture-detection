@@ -69,12 +69,12 @@ Re-run both whenever the features in `posture_core.py` change.
 ```powershell
 python live_predict.py                    # RTSP camera from .env
 python live_predict.py --camera 1         # USB / phone camera index
-python live_predict.py --interval 1.5 --hold 5
+python live_predict.py --interval 1 --hold 8
 ```
 
 - `--neck-margin`: degrees of head-forward beyond your baseline before it counts as bad (default 15); tune it using the "head ... vs baseline" line on screen
-- `--interval`: seconds between detections (default 1.5)
-- `--hold`: seconds of bad posture before the alert (use 4 to 8, default 5)
+- `--interval`: seconds between detections (default 1)
+- `--hold`: seconds of bad posture before the alert (default 8)
 - **First start:** it asks you to sit upright and look at the screen for about 10 s, then saves `calibration.json`.
 - **Keys:** `c` recalibrates (new user, or the camera moved), `q` quits.
 - The red border simulates the future RGB LED.
@@ -93,6 +93,7 @@ python live_predict.py --interval 1.5 --hold 5
 | `live_predict.py` | Live classification with alert |
 | `download_dataset.py`, `inspect_dataset.py` | Get and check the dataset |
 | `extract_features.py`, `train.py` | Build features and train the model |
+| `ultrasonic.py` | HC-SR04 distance on the Raspberry Pi: read, baseline, too-close alert (`--simulate` works on a laptop) |
 | `class_stats.py` | Per-class feature averages, to compare with live values |
 
 ## Troubleshooting
@@ -104,6 +105,18 @@ python live_predict.py --interval 1.5 --hold 5
 - **Head forward not detected**: press `c` to recalibrate while sitting upright, then adjust `--neck-margin` (raise it, e.g. 20, for fewer false alarms; lower it, e.g. 10, if it misses head-forward).
 - **"No reliable pose"**: the body side facing the camera is too hidden; adjust camera position or lighting.
 
+## Ultrasonic sensor (Raspberry Pi)
+
+Wiring: VCC to 5V (pin 2), GND to GND (pin 6), TRIG to GPIO23 (pin 16). ECHO goes through a divider to GPIO24 (pin 18): ECHO, then R1, then GPIO24, then R2 to GND. Use R1 = R2 = 1.2 kΩ (about 2.5 V) or R1 = 1.2 kΩ and R2 = 2.4 kΩ (about 3.3 V).
+
+```bash
+python ultrasonic.py read        # live distance
+python ultrasonic.py baseline    # sit normally, saves your usual distance
+python ultrasonic.py watch       # too-close alert after --hold seconds (default 8)
+```
+
+Calibration is manual: compare the reading with a ruler, and if it is off by a constant, set `ULTRASONIC_OFFSET_CM` in `.env`. Add `--simulate` to try the logic on a laptop. The code is not yet tested on real hardware.
+
 ## Not built yet
 
-HC-SR04 distance sensor and its calibration, RGB LED, Raspberry Pi deployment, backend and React dashboard.
+Pi agent that sends data to the backend, the backend, and the mobile app.

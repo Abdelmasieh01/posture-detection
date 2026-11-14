@@ -40,7 +40,7 @@ class PostureMonitor:
       arrives for 2 x hold seconds the state resets.
     """
 
-    def __init__(self, hold=5.0, smooth=3, good_label="goodposture"):
+    def __init__(self, hold=8.0, smooth=3, good_label="goodposture"):
         self.hold, self.smooth, self.good = hold, smooth, good_label
         self.window = collections.deque(maxlen=smooth)  # (time, label)
         self.bad_since = None

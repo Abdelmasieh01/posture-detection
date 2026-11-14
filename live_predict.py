@@ -2,7 +2,7 @@
 
   python live_predict.py                    # RTSP camera from .env (default)
   python live_predict.py --camera 1         # USB / phone camera index
-  python live_predict.py --interval 1.5 --hold 5
+  python live_predict.py --interval 1 --hold 8
 
 On first start it calibrates automatically (sit upright for ~10 s). Keys while
 running: c = recalibrate, q = quit. The red border simulates the RGB LED: it
@@ -29,13 +29,13 @@ def main():
     ap.add_argument("--camera", default=None,
                     help="default: RTSP stream from .env; or a camera index (0, 1, ...), rtsp:// URL, video file")
     ap.add_argument("--model", default="models/posture_model.joblib")
-    ap.add_argument("--interval", type=float, default=1.5, help="seconds between detections")
-    ap.add_argument("--hold", type=float, default=5.0, help="seconds of bad posture before alert (4-8)")
+    ap.add_argument("--interval", type=float, default=1.0, help="seconds between detections")
+    ap.add_argument("--hold", type=float, default=8.0, help="seconds of bad posture before alert")
     ap.add_argument("--good", default="goodposture", help="label of the good class")
     ap.add_argument("--variant", default="lite", choices=["lite", "full"])
     ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--calibration", default="calibration.json", help="calibration file")
-    ap.add_argument("--neck-margin", type=float, default=12.0,
+    ap.add_argument("--neck-margin", type=float, default=15.0,
                     help="degrees of head-forward beyond your upright baseline before it counts as bad")
     ap.add_argument("--recalibrate", action="store_true", help="calibrate now even if a calibration exists")
     ap.add_argument("--no-calibrate", action="store_true", help="skip calibration (head check off)")

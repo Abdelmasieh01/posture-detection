@@ -5,3 +5,4 @@ pyyaml
 roboflow
 scikit-learn
 joblib
+gpiozero
