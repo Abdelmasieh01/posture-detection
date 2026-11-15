@@ -1,7 +1,4 @@
-"""Settings from .env (no extra dependencies, works the same on the Pi).
-
-Real environment variables win over .env values.
-"""
+"""Reads settings from the .env file and builds the camera (RTSP) address."""
 import os
 import re
 from urllib.parse import quote
@@ -45,10 +42,10 @@ def rtsp_url():
     return f"rtsp://{auth}{host}:{port}{path}"
 
 
-def resolve_source(camera_arg):
-    """--camera not given -> RTSP from .env; otherwise use what was given
-    (a camera index like 1, or a full rtsp:// URL, or a video file)."""
-    return rtsp_url() if camera_arg is None else camera_arg
+def camera_source(arg=None):
+    """Which camera to open: the given value, else CAMERA_SOURCE from .env, else the RTSP stream from .env."""
+    load_env()
+    return arg or os.environ.get("CAMERA_SOURCE") or rtsp_url()
 
 
 def mask_url(url):

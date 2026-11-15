@@ -1,17 +1,21 @@
-"""Model loading + smoothing/alert logic. No camera or GUI code, so the same
-module runs on the Raspberry Pi later (alert -> RGB LED)."""
-import collections
+"""Loads the model, decides the posture label from the angles, and holds the alert rule.
+No camera or window code in here, so agent.py and live_predict.py share exactly the same logic."""
 import datetime
 import json
 import os
-import time
 
 import numpy as np
 
-from posture_core import FEATURE_NAMES
+from posture_core import FEATURE_NAMES, MIN_VISIBILITY
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+MODEL_FILE = os.path.join(HERE, "models", "posture_model.joblib")
+CALIBRATION_FILE = os.path.join(HERE, "calibration.json")  # written by calibrate.py
+GOOD_LABEL = "goodposture"
+HEAD_LABEL = "headforward"
 
 
-def load_model(path="models/posture_model.joblib"):
+def load_model(path=MODEL_FILE):
     import joblib
     bundle = joblib.load(path)
     if list(bundle["feature_names"]) != list(FEATURE_NAMES):
@@ -20,61 +24,14 @@ def load_model(path="models/posture_model.joblib"):
 
 
 def class_probs(bundle, vector):
-    """Return [(class, probability), ...] for one feature vector."""
+    """[(class, probability), ...] for one list of angles."""
     proba = bundle["model"].predict_proba(np.array([vector]))[0]
     return list(zip(bundle["classes"], (float(p) for p in proba)))
 
 
-def classify(bundle, vector):
-    """Return (label, confidence) for one feature vector."""
-    return max(class_probs(bundle, vector), key=lambda t: t[1])
-
-
-class PostureMonitor:
-    """Alerts when bad posture has lasted about `hold` seconds.
-
-    - Majority vote over the last `smooth` predictions removes one-off glitches.
-    - The bad streak starts at the first bad sample and resets only when the
-      vote turns good, so short movement blips do not alert.
-    - Unknown frames (no person / low visibility) are ignored; if nothing valid
-      arrives for 2 x hold seconds the state resets.
-    """
-
-    def __init__(self, hold=8.0, smooth=3, good_label="goodposture"):
-        self.hold, self.smooth, self.good = hold, smooth, good_label
-        self.window = collections.deque(maxlen=smooth)  # (time, label)
-        self.bad_since = None
-        self.last_valid = None
-
-    def update(self, label, t=None):
-        t = time.time() if t is None else t
-        if label is not None:
-            self.window.append((t, label))
-            self.last_valid = t
-        elif self.last_valid is not None and t - self.last_valid > 2 * self.hold:
-            self.window.clear()
-            self.bad_since = None
-
-        bad = [(ts, lab) for ts, lab in self.window if lab != self.good]
-        if self.window and len(bad) > len(self.window) / 2:
-            if self.bad_since is None:
-                self.bad_since = min(ts for ts, _ in bad)
-        else:
-            self.bad_since = None
-
-        bad_for = 0.0 if self.bad_since is None else t - self.bad_since
-        alert = self.bad_since is not None and bad_for >= self.hold
-        top_bad = collections.Counter(lab for _, lab in bad).most_common(1)[0][0] if alert else None
-        return {"alert": alert, "bad_label": top_bad, "samples": len(self.window),
-                "bad": len(bad), "bad_for": bad_for}
-
-
-HEAD_LABEL = "headforward"
-
-
 def save_calibration(path, samples):
-    """samples: list of feature dicts recorded while sitting upright. Stores the median of each."""
-    baseline = {n: float(np.median([smp[n] for smp in samples])) for n in FEATURE_NAMES}
+    """samples: angle dicts recorded while sitting upright. Saves the median of each angle."""
+    baseline = {name: float(np.median([s[name] for s in samples])) for name in FEATURE_NAMES}
     data = {"created": datetime.datetime.now().isoformat(timespec="seconds"),
             "samples": len(samples), "baseline": baseline}
     with open(path, "w") as f:
@@ -83,18 +40,16 @@ def save_calibration(path, samples):
 
 
 class HeadCheck:
-    """Rule-based forward-head check relative to the user's own upright baseline.
+    """Is the head further forward than when this user sat upright (calibration)?
 
-    neck_angle is the ear-over-shoulder angle from vertical (a proxy of the
-    craniovertebral angle). The dataset has no head-forward class, so the model
-    cannot learn it; this check fills that gap and doubles as per-user calibration.
-    """
+    neck_angle = how far the ear is in front of the shoulder, in degrees from vertical.
+    The training data has no head-forward class, so this rule adds it."""
 
-    def __init__(self, baseline_neck, margin=15.0):
+    def __init__(self, baseline_neck, margin=12.0):
         self.baseline_neck, self.margin = baseline_neck, margin
 
     @classmethod
-    def load(cls, path, margin=15.0):
+    def load(cls, path=CALIBRATION_FILE, margin=12.0):
         if not os.path.exists(path):
             return None
         with open(path) as f:
@@ -105,3 +60,39 @@ class HeadCheck:
 
     def is_forward(self, values):
         return self.delta(values) > self.margin
+
+
+def find_posture(features, model, head):
+    """features: what PoseExtractor.extract() returned (None = nobody found).
+    Returns (label, confidence, probabilities)."""
+    if features is None or features.visibility < MIN_VISIBILITY:
+        return "unknown", None, []
+    probs = class_probs(model, features.as_vector())
+    label, confidence = max(probs, key=lambda pair: pair[1])
+    if label == GOOD_LABEL and head is not None and head.is_forward(features.values):
+        return HEAD_LABEL, None, probs
+    return label, round(confidence, 2), probs
+
+
+class Alarm:
+    """Turns on after `hold` bad readings, off again when the person is mostly good.
+
+    It remembers the last hold + 1 readings and is ON when at least `hold` of them are bad.
+    So one wrong reading (a glitch) does not restart the timer.
+    'unknown' (nobody in view) and None are never bad."""
+
+    def __init__(self, hold=8, good_label=GOOD_LABEL):
+        self.hold, self.good = hold, good_label
+        self.recent = []
+        self.bad_count = 0
+        self.bad_label = None  # the most common bad label while the alarm is on
+
+    def update(self, label):
+        """Give it the newest reading. Returns True while the alarm is on."""
+        self.recent.append(label)
+        self.recent = self.recent[-(self.hold + 1):]
+        bad = [x for x in self.recent if x not in (None, "unknown", self.good)]
+        self.bad_count = len(bad)
+        is_on = len(bad) >= self.hold
+        self.bad_label = max(set(bad), key=bad.count) if is_on else None
+        return is_on

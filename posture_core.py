@@ -5,8 +5,6 @@ training next, and inference on the Raspberry Pi later, so features always match
 """
 import math
 import os
-import threading
-import time
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -161,64 +159,3 @@ def draw_overlay(frame, feats, values=None):
         cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
         y += 24
     return frame
-
-
-def parse_source(value):
-    """'0' -> camera index 0; anything else (rtsp://..., a video file) stays a string."""
-    return int(value) if str(value).isdigit() else value
-
-
-class FrameSource:
-    """Camera / RTSP reader that always returns the NEWEST frame.
-
-    A background thread keeps draining the stream, so slow processing (one
-    detection every 1-2 s) never shows stale buffered frames. RTSP uses TCP
-    (fewer corrupted frames) and the stream is reopened if it drops.
-    """
-
-    def __init__(self, source):
-        self.source = parse_source(source)
-        self._lock = threading.Lock()
-        self._frame = None
-        self._stop = False
-        self._open()
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def _open(self):
-        if isinstance(self.source, str) and self.source.lower().startswith("rtsp"):
-            os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
-            self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
-        else:
-            self.cap = cv2.VideoCapture(self.source)
-
-    def _loop(self):
-        while not self._stop:
-            ok, frame = self.cap.read() if self.cap.isOpened() else (False, None)
-            if ok:
-                with self._lock:
-                    self._frame = frame
-            else:
-                self.cap.release()
-                time.sleep(1.0)
-                if not self._stop:
-                    self._open()
-
-    def wait_first_frame(self, timeout=15.0):
-        end = time.time() + timeout
-        while time.time() < end:
-            if self.read()[0]:
-                return True
-            time.sleep(0.05)
-        return False
-
-    def read(self):
-        with self._lock:
-            if self._frame is None:
-                return False, None
-            return True, self._frame.copy()
-
-    def release(self):
-        self._stop = True
-        self._thread.join(timeout=2)
-        self.cap.release()
