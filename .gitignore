@@ -57,6 +57,7 @@ celerybeat.pid
 profile_default/
 ipython_config.py
 
+datasets/
 features.csv
 *.tsv
 *.parquet
@@ -66,22 +67,6 @@ features.csv
 *.tfrecord
 *.npy
 *.npz
-
-# Model Weights & Checkpoints
-models/
-checkpoints/
-weights/
-*.pkl
-*.pickle
-*.joblib
-*.pt
-*.pth
-*.onnx
-*.safetensors
-*.ckpt
-*.pb
-*.tflite
-*.mlmodel
 
 calibration.json
 
