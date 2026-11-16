@@ -29,18 +29,26 @@ MAX_DISTANCE_M = 2.0
 
 def open_sensor():
     """gpiozero measures all the time in the background and gives the median of the last 5
-    measurements, which removes random spikes."""
+    measurements, which removes random spikes.
+    partial=True is important: without it, reading the distance waits forever when no echo
+    ever arrives (for example a sensor that is not connected) and the whole program freezes."""
     from gpiozero import DistanceSensor
+    from gpiozero.exc import BadPinFactory
     load_env()
-    return DistanceSensor(echo=int(os.environ.get("ULTRASONIC_ECHO", 24)),
-                          trigger=int(os.environ.get("ULTRASONIC_TRIG", 23)),
-                          max_distance=MAX_DISTANCE_M, queue_len=5)
+    try:
+        return DistanceSensor(echo=int(os.environ.get("ULTRASONIC_ECHO", 24)),
+                              trigger=int(os.environ.get("ULTRASONIC_TRIG", 23)),
+                              max_distance=MAX_DISTANCE_M, queue_len=5, partial=True)
+    except BadPinFactory:
+        raise RuntimeError("gpiozero cannot find a GPIO library. On the Pi run: sudo apt install python3-lgpio "
+                           "and let the venv use it (see 'Raspberry Pi setup' in README.md)")
 
 
 def read_cm(sensor):
-    """Distance in cm (plus the manual offset), or None when no echo came back."""
+    """Distance in cm (plus the manual offset), or None when there is no usable reading."""
     cm = sensor.distance * 100
-    if cm >= MAX_DISTANCE_M * 100 - 0.5:  # gpiozero reports the maximum when it hears nothing
+    # 0 = nothing measured yet, the maximum = nothing heard, below 2 cm = under the sensor's minimum range
+    if cm < 2 or cm >= MAX_DISTANCE_M * 100 - 0.5:
         return None
     return round(cm + float(os.environ.get("ULTRASONIC_OFFSET_CM", 0)), 1)
 
@@ -86,9 +94,12 @@ def run_baseline():
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["read"]:
-        run_read()
-    elif sys.argv[1:] == ["baseline"]:
-        run_baseline()
-    else:
-        print("Usage: python ultrasonic.py read   or   python ultrasonic.py baseline")
+    try:
+        if sys.argv[1:] == ["read"]:
+            run_read()
+        elif sys.argv[1:] == ["baseline"]:
+            run_baseline()
+        else:
+            print("Usage: python ultrasonic.py read   or   python ultrasonic.py baseline")
+    except RuntimeError as error:
+        sys.exit(str(error))
