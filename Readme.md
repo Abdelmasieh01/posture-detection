@@ -1,13 +1,13 @@
 # Posture Detection
 
-A camera watches your side view while you sit. The program finds your body points, turns them into angles, and a small trained model says if the posture is good or bad. An ultrasonic sensor measures how close you are to the screen. When something is bad for about 8 seconds, an alert is sent to the backend, and the mobile app shows a notification.
+A camera watches your side view while you sit. The program finds your body points, turns them into angles, and a small trained model says if the posture is good or bad. An ultrasonic sensor measures how close you are to the screen. When something is bad for most of about 10 seconds, an alert is sent to the backend, and the mobile app shows a notification.
 
 ## How it works
 
 1. **Camera** sends a picture (RTSP stream).
 2. **MediaPipe** finds ear, shoulder, hip and nose. We turn them into 5 angles (`posture_core.py`).
 3. **Model** (Random Forest) turns the angles into a label: `goodposture`, `forwardbadposture` or `backwardbadposture`. A **head check** adds `headforward` when your head is further forward than in your calibration (`posture_monitor.py`).
-4. **Alarm rule**: an alert turns on when 8 of the last 9 checks (one check per second) are bad.
+4. **Alarm rule**: an alert turns on when at least 7 of the last 10 checks (one check per second) are bad, and off when fewer are.
 5. **Backend** gets a live status every 5 s, an event when an alert starts or ends, and a summary every minute (`agent.py`, `backend.py`).
 
 ## Files
@@ -64,11 +64,24 @@ python live_predict.py     # a window to check what the program decides
 python agent.py            # the real program (no window, sends data to the backend)
 ```
 
-`agent.py` has no options. Its settings are the constants at the top of the file (check every 1 s, alert after 8, head margin 12 degrees, distance margin 15 cm). `.env` can turn the distance sensor off with `ULTRASONIC=off`. Stop it with Ctrl+C.
+`agent.py` has no options. Its settings are the constants at the top of the file (check every 1 s, alert at 7 bad out of the last 10, head margin 12 degrees, distance margin 15 cm). `.env` can turn the distance sensor off with `ULTRASONIC=off`. Stop it with Ctrl+C.
 
 ## Ultrasonic wiring (Raspberry Pi)
 
 VCC to 5V (pin 2), GND to GND (pin 6), TRIG to GPIO23 (pin 16). ECHO gives 5 V but the Pi accepts only 3.3 V, so it goes through a voltage divider: ECHO, then R1, then GPIO24 (pin 18), then R2 to GND. R1 = R2 = 1.2 kΩ gives about 2.5 V (safe). R1 = 1.2 kΩ and R2 = 2.4 kΩ gives about 3.3 V. Test with `python ultrasonic.py read`. Not yet tested on real hardware.
+
+## Raspberry Pi setup
+
+- Use a virtual environment and `pip install -r requirements.txt` (MediaPipe works on the Pi).
+- The distance sensor needs a GPIO library. On the Pi 5, gpiozero uses `lgpio`. Install it inside the venv:
+
+```bash
+pip install lgpio
+python -c "import lgpio; print('lgpio ok')"
+```
+
+If `pip install lgpio` fails with `cannot find -llgpio`, install the C library and try again: `sudo apt install -y liblgpio-dev` (a different build error may also need `swig python3-dev`). Another way is to let the venv use the system package: `sudo apt install -y python3-lgpio`, then set `include-system-site-packages = true` in `.venv/pyvenv.cfg`. Check the sensor with `python ultrasonic.py read`. The MediaPipe "Sparsity tensors" and "madvise" messages at start are harmless.
+- If the sensor cannot be opened, `agent.py` prints why and keeps running without distance.
 
 ## Troubleshooting
 

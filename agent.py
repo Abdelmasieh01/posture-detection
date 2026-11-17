@@ -20,17 +20,19 @@ import ultrasonic
 from backend import Backend
 from camera import open_camera
 from config import camera_source, load_env, mask_url
-from posture_core import PoseExtractor
+from posture_core import FrameSmoother, PoseExtractor
 from posture_monitor import (CALIBRATION_FILE, GOOD_LABEL, MODEL_FILE, Alarm, HeadCheck,
                              find_posture, load_model)
 
 # ---- settings
 INTERVAL = 1           # seconds between checks
-HOLD = 8               # bad checks before an alert (one check = one second)
+ALERT_WINDOW = 10      # the alert looks at the last 10 checks (one check = one second)
+ALERT_BAD = 7          # ...and turns on when at least 7 of them are bad (off again when fewer)
 NECK_MARGIN = 12       # degrees the head may lean forward compared to the calibration
 DISTANCE_MARGIN = 15   # cm closer than the usual distance counts as too close
 STATUS_EVERY = 5       # seconds between status messages
 FRAME_WIDTH = 640      # frames are shrunk to this width before the analysis
+SAMPLES_PER_CHECK = 5  # MediaPipe looks at this many pictures per check; the median angles are used (steadier)
 
 
 def iso(t):
@@ -99,17 +101,24 @@ def main():
     head = HeadCheck.load(CALIBRATION_FILE, NECK_MARGIN)  # None if calibrate.py was never run
     baseline = ultrasonic.load_baseline()                 # None if ultrasonic.py baseline was never run
     pose = PoseExtractor("lite")
+    smoother = FrameSmoother()
     cap = open_camera(source)
-    sensor = None if os.environ.get("ULTRASONIC", "on").lower() == "off" else ultrasonic.open_sensor()
+    sensor = None
+    if os.environ.get("ULTRASONIC", "on").lower() != "off":
+        try:
+            sensor = ultrasonic.open_sensor()
+        except Exception as error:  # the posture part should still work without the distance sensor
+            print(f"Distance sensor not available, continuing without it: {error}")
 
     print(f"Camera: {mask_url(source)} | backend: {server.url}")
     print("Head check:", "on" if head else "OFF (run calibrate.py)")
     print("Distance:", "off" if sensor is None else (f"baseline {baseline} cm" if baseline else "no baseline (run ultrasonic.py baseline)"))
 
-    posture_alarm, distance_alarm = Alarm(HOLD, GOOD_LABEL), Alarm(HOLD, "ok")
+    posture_alarm, distance_alarm = Alarm(ALERT_WINDOW, ALERT_BAD, GOOD_LABEL), Alarm(ALERT_WINDOW, ALERT_BAD, "ok")
     alerts = {"posture": None, "distance": None}
     minute = new_minute(0)
-    last_check = last_status = 0
+    last_check = time.time()  # the first check comes one INTERVAL from now
+    last_sample = last_status = 0
     checks = 0
     signal.signal(signal.SIGTERM, lambda *args: sys.exit(0))  # lets "systemctl stop" end the program cleanly
 
@@ -123,13 +132,16 @@ def main():
                 cap = open_camera(source)
                 continue
             now = time.time()
-            if now - last_check < INTERVAL:  # the camera sends ~25 pictures a second, we only use one per INTERVAL
+            if now - last_sample >= INTERVAL / SAMPLES_PER_CHECK:  # the camera sends ~25 pictures a second, we only use a few
+                last_sample = now
+                small = cv2.resize(frame, (FRAME_WIDTH, int(frame.shape[0] * FRAME_WIDTH / frame.shape[1])))
+                smoother.add(pose.extract(small))
+            if now - last_check < INTERVAL:
                 continue
             last_check = now
 
-            # 1. what do we see?
-            small = cv2.resize(frame, (FRAME_WIDTH, int(frame.shape[0] * FRAME_WIDTH / frame.shape[1])))
-            label, confidence, _ = find_posture(pose.extract(small), model, head)
+            # 1. what do we see? (median angles of the last few pictures)
+            label, confidence, _ = find_posture(smoother.median(), model, head)
             distance, distance_state = find_distance(sensor, baseline)
 
             # 2. alerts

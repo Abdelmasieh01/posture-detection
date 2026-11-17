@@ -4,7 +4,7 @@
   python live_predict.py 1         # camera number 1 (or an rtsp:// address)
 
 The first time (no calibration.json) it calibrates for you. Keys: c = calibrate again, q = quit.
-A red border = alert (bad posture for about HOLD seconds).
+A red border = alert (7 of the last 10 checks are bad).
 """
 import sys
 import time
@@ -14,12 +14,14 @@ import cv2
 from calibrate import calibrate
 from camera import open_camera
 from config import camera_source, mask_url
-from posture_core import PoseExtractor, draw_overlay
+from posture_core import FrameSmoother, PoseExtractor, draw_overlay
 from posture_monitor import CALIBRATION_FILE, GOOD_LABEL, MODEL_FILE, Alarm, HeadCheck, find_posture, load_model
 
 INTERVAL = 1      # seconds between checks
-HOLD = 8          # bad checks before an alert
+ALERT_WINDOW = 10  # the alert looks at the last 10 checks
+ALERT_BAD = 7      # ...and turns on when at least 7 of them are bad
 NECK_MARGIN = 12  # degrees the head may lean forward compared to the calibration
+SAMPLES_PER_CHECK = 5  # pictures per check; the median angles are used (steadier)
 
 
 def put_text(frame, text, y, color, scale=0.6):
@@ -33,13 +35,15 @@ if not cap.isOpened():
     raise SystemExit(f"Cannot open {mask_url(source)}. Check .env or the camera number.")
 model = load_model(MODEL_FILE)
 pose = PoseExtractor("lite")
+smoother = FrameSmoother()
 
 head = HeadCheck.load(CALIBRATION_FILE, NECK_MARGIN)
 if head is None and calibrate(cap, pose):
     head = HeadCheck.load(CALIBRATION_FILE, NECK_MARGIN)
 
-alarm = Alarm(HOLD, GOOD_LABEL)
-features, label, probs, alert, last_check = None, "unknown", [], False, 0
+alarm = Alarm(ALERT_WINDOW, ALERT_BAD, GOOD_LABEL)
+features, label, probs, alert = None, "unknown", [], False
+last_check = last_sample = 0
 
 while True:
     ok, frame = cap.read()
@@ -48,9 +52,12 @@ while True:
     frame = cv2.resize(frame, (640, int(frame.shape[0] * 640 / frame.shape[1])))
     height, width = frame.shape[:2]
 
+    if time.time() - last_sample >= INTERVAL / SAMPLES_PER_CHECK:
+        last_sample = time.time()
+        smoother.add(pose.extract(frame))
     if time.time() - last_check >= INTERVAL:
         last_check = time.time()
-        features = pose.extract(frame)
+        features = smoother.median()
         label, confidence, probs = find_posture(features, model, head)
         alert = alarm.update(label)
 
@@ -62,7 +69,7 @@ while True:
         put_text(frame, "head check OFF (press c to calibrate)", height - 110, (0, 255, 255))
     elif features is not None:
         put_text(frame, f"head {head.delta(features.values):+.0f} deg vs calibration (limit +{NECK_MARGIN})", height - 110, (255, 255, 255))
-    put_text(frame, f"bad readings: {alarm.bad_count} of the last {HOLD + 1} (alert at {HOLD})", height - 20, (255, 255, 255))
+    put_text(frame, f"bad readings: {alarm.bad_count} of the last {ALERT_WINDOW} (alert at {ALERT_BAD})", height - 20, (255, 255, 255))
     if alert:
         cv2.rectangle(frame, (0, 0), (width - 1, height - 1), (0, 0, 255), 14)
         put_text(frame, f"BAD POSTURE: {alarm.bad_label}", 200, (0, 0, 255), 0.8)
@@ -73,7 +80,7 @@ while True:
         break
     if key == ord("c") and calibrate(cap, pose):
         head = HeadCheck.load(CALIBRATION_FILE, NECK_MARGIN)
-        alarm = Alarm(HOLD, GOOD_LABEL)
+        alarm = Alarm(ALERT_WINDOW, ALERT_BAD, GOOD_LABEL)
 
 cap.release()
 cv2.destroyAllWindows()

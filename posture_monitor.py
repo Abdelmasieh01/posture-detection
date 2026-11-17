@@ -75,14 +75,12 @@ def find_posture(features, model, head):
 
 
 class Alarm:
-    """Turns on after `hold` bad readings, off again when the person is mostly good.
+    """Turns on when at least `needed` of the last `window` readings are bad (for example 7 of the last 10),
+    and off again when fewer are. A few good readings in between (glitches, small movements)
+    do not stop it. 'unknown' (nobody in view) and None are never bad."""
 
-    It remembers the last hold + 1 readings and is ON when at least `hold` of them are bad.
-    So one wrong reading (a glitch) does not restart the timer.
-    'unknown' (nobody in view) and None are never bad."""
-
-    def __init__(self, hold=8, good_label=GOOD_LABEL):
-        self.hold, self.good = hold, good_label
+    def __init__(self, window=10, needed=7, good_label=GOOD_LABEL):
+        self.window, self.needed, self.good = window, needed, good_label
         self.recent = []
         self.bad_count = 0
         self.bad_label = None  # the most common bad label while the alarm is on
@@ -90,9 +88,9 @@ class Alarm:
     def update(self, label):
         """Give it the newest reading. Returns True while the alarm is on."""
         self.recent.append(label)
-        self.recent = self.recent[-(self.hold + 1):]
+        self.recent = self.recent[-self.window:]
         bad = [x for x in self.recent if x not in (None, "unknown", self.good)]
         self.bad_count = len(bad)
-        is_on = len(bad) >= self.hold
+        is_on = len(bad) >= self.needed
         self.bad_label = max(set(bad), key=bad.count) if is_on else None
         return is_on

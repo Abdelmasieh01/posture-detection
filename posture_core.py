@@ -3,6 +3,7 @@
 The SAME code is used for live testing now, dataset feature extraction and
 training next, and inference on the Raspberry Pi later, so features always match.
 """
+import collections
 import math
 import os
 import urllib.request
@@ -159,3 +160,32 @@ def draw_overlay(frame, feats, values=None):
         cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1)
         y += 24
     return frame
+
+
+class FrameSmoother:
+    """MediaPipe's points move a little in every frame, even when you sit still.
+    This collects the angles of several frames and gives the MEDIAN of each angle:
+    one bad frame cannot move the result, and the noise gets about half as big."""
+
+    def __init__(self):
+        self.frames = []
+
+    def add(self, features):
+        """Give it what PoseExtractor.extract() returned (None and unclear frames are ignored)."""
+        if features is not None and features.visibility >= MIN_VISIBILITY:
+            self.frames.append(features)
+
+    def median(self):
+        """The median angles of the collected frames, as one PostureFeatures. Then forgets the frames.
+        Returns None if fewer than 3 good frames were collected."""
+        frames, self.frames = self.frames, []
+        if len(frames) < 3:
+            return None
+        # Frames can disagree about which body side is visible or which way the person faces.
+        # That changes the meaning (or the sign) of every angle, so keep only the most common case.
+        side, facing = collections.Counter((f.side, f.facing) for f in frames).most_common(1)[0][0]
+        frames = [f for f in frames if (f.side, f.facing) == (side, facing)]
+        values = {name: float(np.median([f.values[name] for f in frames])) for name in FEATURE_NAMES}
+        return PostureFeatures(side=side, facing=facing,
+                               visibility=float(np.mean([f.visibility for f in frames])),
+                               values=values, points=frames[-1].points)
