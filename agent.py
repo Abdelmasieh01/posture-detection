@@ -18,7 +18,9 @@ import cv2
 
 import ultrasonic
 from backend import Backend
+from calibrate import calibrate
 from camera import open_camera
+from commands import CommandChannel
 from config import camera_source, load_env, mask_url
 from posture_core import FrameSmoother, PoseExtractor
 from posture_monitor import (CALIBRATION_FILE, GOOD_LABEL, MODEL_FILE, Alarm, HeadCheck,
@@ -33,6 +35,9 @@ DISTANCE_MARGIN = 15   # cm closer than the usual distance counts as too close
 STATUS_EVERY = 5       # seconds between status messages
 FRAME_WIDTH = 640      # frames are shrunk to this width before the analysis
 SAMPLES_PER_CHECK = 5  # MediaPipe looks at this many pictures per check; the median angles are used (steadier)
+CALIBRATION_DELAY = 5     # seconds to get ready (and sit upright) after a calibration command
+CALIBRATION_SECONDS = 10  # seconds the camera calibration records
+DISTANCE_SECONDS = 8      # seconds the distance calibration records
 
 
 def iso(t):
@@ -93,9 +98,38 @@ def minute_summary(minute):
             "avg_angles": None}
 
 
+def run_command(name, cap, pose, sensor, channel):
+    """Runs a calibration command from the app. While it runs, the agent does nothing else.
+    It tells the app how it is going: get_ready, recording, then done or failed."""
+    def tell(status, detail=""):
+        print(f"Command {name}: {status} {detail}")
+        channel.reply({"type": "command_result", "command": name, "status": status, "detail": detail})
+
+    if name == "calibrate_camera":
+        if calibrate(cap, pose, CALIBRATION_FILE, CALIBRATION_SECONDS, CALIBRATION_DELAY, window=False, on_progress=tell):
+            tell("done")
+        else:
+            tell("failed", "not enough clear readings, make sure your side is visible")
+    elif name == "calibrate_distance":
+        if sensor is None:
+            tell("failed", "no distance sensor")
+            return
+        tell("get_ready")
+        time.sleep(CALIBRATION_DELAY)
+        tell("recording")
+        try:
+            ultrasonic.record_baseline(sensor, DISTANCE_SECONDS)
+            tell("done")
+        except RuntimeError as error:
+            tell("failed", str(error))
+    else:
+        tell("failed", "unknown command")
+
+
 def main():
     load_env()
     server = Backend(os.environ.get("BACKEND_URL", "http://localhost:8000"))
+    channel = CommandChannel(server.url.replace("http", "ws", 1) + "/ws/device/")  # http -> ws, https -> wss
     source = camera_source()
     model = load_model(MODEL_FILE)
     head = HeadCheck.load(CALIBRATION_FILE, NECK_MARGIN)  # None if calibrate.py was never run
@@ -131,6 +165,16 @@ def main():
                 time.sleep(2)
                 cap = open_camera(source)
                 continue
+            command = channel.get()  # a calibration command from the app, if there is one
+            if command and command.get("type") == "command":
+                run_command(command.get("command"), cap, pose, sensor, channel)
+                head = HeadCheck.load(CALIBRATION_FILE, NECK_MARGIN)  # use the new calibration right away
+                baseline = ultrasonic.load_baseline()
+                posture_alarm, distance_alarm = Alarm(ALERT_WINDOW, ALERT_BAD, GOOD_LABEL), Alarm(ALERT_WINDOW, ALERT_BAD, "ok")
+                smoother = FrameSmoother()
+                last_check = time.time()
+                continue
+
             now = time.time()
             if now - last_sample >= INTERVAL / SAMPLES_PER_CHECK:  # the camera sends ~25 pictures a second, we only use a few
                 last_sample = now
@@ -174,6 +218,7 @@ def main():
         print("Stopping...")
         if minute["count"] > 0:
             server.send_later("/api/aggregates/", minute_summary(minute))
+        channel.close()
         cap.release()
 
 

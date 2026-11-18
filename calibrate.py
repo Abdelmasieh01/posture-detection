@@ -24,32 +24,43 @@ def put_text(frame, text, y, color):
     cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
 
-def calibrate(cap, extractor, out=CALIBRATION_FILE, seconds=10, delay=3):
-    """Shows the camera for `delay` seconds (get ready), then records for `seconds` seconds.
+def calibrate(cap, extractor, out=CALIBRATION_FILE, seconds=10, delay=3, window=True, on_progress=None):
+    """Waits `delay` seconds (get ready), then records for `seconds` seconds.
+    window=False: no picture window (the Pi has no screen).
+    on_progress("get_ready") and on_progress("recording") are called when those phases start.
     Returns the saved data, or None if cancelled or too few good readings."""
+    say = on_progress or (lambda status: None)
+    say("get_ready")
     start = time.time()
-    samples = []
+    samples, recording, last_sample, features = [], False, 0, None
     while time.time() - start < delay + seconds:
         ok, frame = cap.read()
         if not ok:
             break
-        frame = cv2.resize(frame, (640, int(frame.shape[0] * 640 / frame.shape[1])))
-        features = extractor.extract(frame)
-        recording = time.time() - start >= delay
-        if features is not None:
-            draw_overlay(frame, features)
-            if recording and features.visibility >= MIN_VISIBILITY:
+        now = time.time()
+        if not recording and now - start >= delay:
+            recording = True
+            say("recording")
+        if now - last_sample >= (0 if window else 0.2):  # a window shows every picture, without one 5 per second is enough
+            last_sample = now
+            frame = cv2.resize(frame, (640, int(frame.shape[0] * 640 / frame.shape[1])))
+            features = extractor.extract(frame)
+            if recording and features is not None and features.visibility >= MIN_VISIBILITY:
                 samples.append(dict(features.values))
-        if recording:
-            put_text(frame, f"Sit upright, look at the screen. {len(samples)} readings", frame.shape[0] - 20, (0, 255, 0))
-        else:
-            put_text(frame, "Calibration: get ready...", frame.shape[0] - 20, (0, 255, 255))
-        cv2.imshow(TITLE, frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            cv2.destroyWindow(TITLE)
-            print("Calibration cancelled.")
-            return None
-    cv2.destroyWindow(TITLE)
+        if window:
+            if features is not None:
+                draw_overlay(frame, features)
+            if recording:
+                put_text(frame, f"Sit upright, look at the screen. {len(samples)} readings", frame.shape[0] - 20, (0, 255, 0))
+            else:
+                put_text(frame, "Calibration: get ready...", frame.shape[0] - 20, (0, 255, 255))
+            cv2.imshow(TITLE, frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                cv2.destroyWindow(TITLE)
+                print("Calibration cancelled.")
+                return None
+    if window:
+        cv2.destroyWindow(TITLE)
 
     if len(samples) < 10:
         print(f"Only {len(samples)} good readings. Make sure your side is clearly visible and try again.")

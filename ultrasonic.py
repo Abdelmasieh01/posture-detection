@@ -72,22 +72,29 @@ def run_read():
         pass
 
 
-def run_baseline():
-    sensor = open_sensor()
-    print("Sit the way you normally do, facing the screen. Starting in 3 s...")
-    time.sleep(3)
+def record_baseline(sensor, seconds=8):
+    """Measures for `seconds` seconds while the user sits normally. Saves the median distance.
+    Returns (baseline in cm, spread in cm). Raises RuntimeError if there were too few readings."""
     values = []
-    for _ in range(25):  # about 8 seconds
+    end = time.time() + seconds
+    while time.time() < end:
         cm = read_cm(sensor)
         if cm is not None:
             values.append(cm)
         time.sleep(0.3)
     if len(values) < 10:
-        raise SystemExit("Not enough readings. Check the wiring and that you face the sensor.")
+        raise RuntimeError("not enough distance readings, check the wiring and that you face the sensor")
     baseline = statistics.median(values)
-    spread = statistics.pstdev(values)
     with open(BASELINE_FILE, "w") as f:
         json.dump({"baseline_cm": baseline, "created": datetime.datetime.now().isoformat(timespec="seconds")}, f, indent=2)
+    return baseline, statistics.pstdev(values)
+
+
+def run_baseline():
+    sensor = open_sensor()
+    print("Sit the way you normally do, facing the screen. Starting in 3 s...")
+    time.sleep(3)
+    baseline, spread = record_baseline(sensor)
     print(f"Baseline distance: {baseline:.1f} cm (spread {spread:.1f} cm). Saved.")
     if spread > 3:
         print("You moved a lot. Sit still and run it again for a cleaner baseline.")

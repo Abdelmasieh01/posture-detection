@@ -6,3 +6,4 @@ roboflow
 scikit-learn
 joblib
 gpiozero
+websockets>=17

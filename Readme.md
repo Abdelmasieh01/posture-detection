@@ -8,7 +8,8 @@ A camera watches your side view while you sit. The program finds your body point
 2. **MediaPipe** finds ear, shoulder, hip and nose. We turn them into 5 angles (`posture_core.py`).
 3. **Model** (Random Forest) turns the angles into a label: `goodposture`, `forwardbadposture` or `backwardbadposture`. A **head check** adds `headforward` when your head is further forward than in your calibration (`posture_monitor.py`).
 4. **Alarm rule**: an alert turns on when at least 7 of the last 10 checks (one check per second) are bad, and off when fewer are.
-5. **Backend** gets a live status every 5 s, an event when an alert starts or ends, and a summary every minute (`agent.py`, `backend.py`).
+5. **Commands**: the mobile app can ask the Pi to calibrate (see "Calibrate from the app").
+6. **Backend** gets a live status every 5 s, an event when an alert starts or ends, and a summary every minute (`agent.py`, `backend.py`).
 
 ## Files
 
@@ -22,6 +23,7 @@ Runs on the Pi:
 | `camera.py` | Opens the camera or RTSP stream |
 | `ultrasonic.py` | Reads the distance sensor (`read` and `baseline` commands) |
 | `backend.py` | Sends data to the backend and retries when it is down |
+| `commands.py` | Receives calibration commands from the backend over a WebSocket |
 | `config.py` | Reads `.env` and builds the RTSP address |
 
 Tools you use before running:
@@ -56,6 +58,17 @@ Fill `.env` (see `.env.example`): the camera login (`RTSP_*`) and the backend ad
 - Camera: `python calibrate.py`. Sit upright for about 10 seconds. Saves `calibration.json`.
 - Distance (on the Pi): `python ultrasonic.py baseline`. Sit normally. Saves `distance_baseline.json`.
 - Distance offset: compare the sensor with a ruler. If it is always off by the same amount, set `ULTRASONIC_OFFSET_CM` in `.env`.
+
+## Calibrate from the app
+
+The Pi has no screen, so the app can start the calibrations. The app sends `POST /api/commands/` to the backend, and the backend pushes the command to the Pi over the WebSocket `ws://<backend>/ws/device/` (the agent connects to it by itself, the address comes from `BACKEND_URL`).
+
+| Command | What the Pi does |
+| --- | --- |
+| `calibrate_camera` | Waits 5 s (get ready, sit upright), then records 10 s and saves `calibration.json` |
+| `calibrate_distance` | Waits 5 s, then records 8 s and saves `distance_baseline.json` |
+
+The Pi sends progress back (`get_ready`, `recording`, `done` or `failed`), and the backend passes it to the app. While calibrating, the agent does nothing else, and the new calibration is used right away. If the Pi is offline the command is lost, because commands are not stored.
 
 ## Run
 
