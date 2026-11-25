@@ -1,7 +1,8 @@
 """Raspberry Pi agent. Run it with:   python agent.py
 
 Once per second it looks at the camera and the distance sensor, decides if the posture is bad,
-and sends the results to the backend. Needs:
+and sends the results to the backend. While a posture alert is on it also sends a few pictures.
+Needs:
   models/posture_model.joblib      (from train.py)
   calibration.json                 (from calibrate.py, the camera baseline)
   distance_baseline.json           (from ultrasonic.py baseline)
@@ -38,6 +39,10 @@ SAMPLES_PER_CHECK = 5  # MediaPipe looks at this many pictures per check; the me
 CALIBRATION_DELAY = 5     # seconds to get ready (and sit upright) after a calibration command
 CALIBRATION_SECONDS = 10  # seconds the camera calibration records
 DISTANCE_SECONDS = 8      # seconds the distance calibration records
+SNAPSHOT_EVERY = 5     # seconds between pictures while a posture alert is on
+SNAPSHOT_MAX = 3       # pictures per alert (the first one is sent right when the alert starts)
+SNAPSHOT_WIDTH = 480   # pictures are shrunk to this width before sending
+SNAPSHOT_QUALITY = 70  # JPEG quality
 
 
 def iso(t):
@@ -56,22 +61,36 @@ def find_distance(sensor, baseline):
 
 
 def check_alert(kind, is_on, label, now, alerts, server):
-    """Sends an event when an alert turns on or off. alerts[kind] is None, or (start time, label) while on.
+    """Sends an event when an alert turns on or off. alerts[kind] is None, or a dict while on.
     Returns True when something was sent."""
     if is_on and alerts[kind] is None:
-        alerts[kind] = (now, label)
+        alerts[kind] = {"start": now, "label": label, "event_id": None, "shots": 0, "last_shot": 0}
         event = {"state": "start", "label": label, "duration_s": None}
     elif not is_on and alerts[kind] is not None:
-        start, label = alerts[kind]
-        alerts[kind] = None
-        event = {"state": "end", "label": label, "duration_s": round(now - start, 1)}
+        alert, alerts[kind] = alerts[kind], None
+        event = {"state": "end", "label": alert["label"], "duration_s": round(now - alert["start"], 1)}
     else:
         return False
     # the uuid is the event's id: if the same event is sent twice, the backend knows it is a repeat
     event.update(event_id=str(uuid.uuid4()), ts=iso(now), kind=kind)
+    if event["state"] == "start":
+        alerts[kind]["event_id"] = event["event_id"]  # the pictures point to this event
     server.send_later("/api/events/", event)
-    print(f"Alert {event['state']}: {kind} ({label})")
+    print(f"Alert {event['state']}: {kind} ({event['label']})")
     return True
+
+
+def send_snapshot(frame, label, alert, now, server):
+    """While the posture alert is on: send a picture right away, then every SNAPSHOT_EVERY s, at most SNAPSHOT_MAX."""
+    if alert is None or alert["shots"] >= SNAPSHOT_MAX or now - alert["last_shot"] < SNAPSHOT_EVERY:
+        return
+    small = cv2.resize(frame, (SNAPSHOT_WIDTH, int(frame.shape[0] * SNAPSHOT_WIDTH / frame.shape[1])))
+    ok, jpeg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, SNAPSHOT_QUALITY])
+    if not ok:
+        return
+    alert["shots"] += 1
+    alert["last_shot"] = now
+    server.send_image("/api/snapshots/", {"event_id": alert["event_id"], "ts": iso(now), "label": label}, jpeg.tobytes())
 
 
 def new_minute(start):
@@ -188,9 +207,10 @@ def main():
             label, confidence, _ = find_posture(smoother.median(), model, head)
             distance, distance_state = find_distance(sensor, baseline)
 
-            # 2. alerts
+            # 2. alerts (and pictures while the posture alert is on)
             posture_changed = check_alert("posture", posture_alarm.update(label), posture_alarm.bad_label, now, alerts, server)
             distance_changed = check_alert("distance", distance_alarm.update(distance_state), "tooclose", now, alerts, server)
+            send_snapshot(frame, label, alerts["posture"], now, server)
 
             # 3. live status (right away when an alert changed, otherwise every STATUS_EVERY seconds)
             if posture_changed or distance_changed or now - last_status >= STATUS_EVERY:

@@ -3,6 +3,7 @@ import json
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 
 class Backend:
@@ -15,6 +16,18 @@ class Backend:
         """Live status. If it fails we just skip it, a newer one comes soon."""
         if time.time() >= self.next_try:
             self._post("/api/status/", data)
+
+    def send_image(self, path, fields, jpeg):
+        """A picture. Best effort like status: pictures are big and not critical, so a failed one is skipped."""
+        if time.time() < self.next_try:
+            return
+        boundary = uuid.uuid4().hex
+        body = b""
+        for name, value in fields.items():
+            body += f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+        body += (f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="frame.jpg"\r\n'
+                 f'Content-Type: image/jpeg\r\n\r\n').encode() + jpeg + f"\r\n--{boundary}--\r\n".encode()
+        self._post(path, body, f"multipart/form-data; boundary={boundary}", timeout=5)
 
     def send_later(self, path, data):
         """Events and aggregates must not get lost: put them on the waiting list, then send what is waiting."""
@@ -30,12 +43,13 @@ class Backend:
                 return
             self.waiting.pop(0)  # sent, or refused by the backend (sending it again would not help)
 
-    def _post(self, path, data):
-        """Returns 'ok', 'refused' (the backend said no) or 'down' (could not reach it)."""
-        request = urllib.request.Request(self.url + path, data=json.dumps(data).encode(),
-                                         headers={"Content-Type": "application/json"})
+    def _post(self, path, data, content_type="application/json", timeout=2):
+        """Returns 'ok', 'refused' (the backend said no) or 'down' (could not reach it).
+        data is a dict (sent as JSON) or ready-made bytes (for pictures)."""
+        body = data if isinstance(data, bytes) else json.dumps(data).encode()
+        request = urllib.request.Request(self.url + path, data=body, headers={"Content-Type": content_type})
         try:
-            with urllib.request.urlopen(request, timeout=2):
+            with urllib.request.urlopen(request, timeout=timeout):
                 return "ok"
         except urllib.error.HTTPError as error:
             if error.code < 500:
